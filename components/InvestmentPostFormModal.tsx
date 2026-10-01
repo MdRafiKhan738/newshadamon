@@ -1,0 +1,1253 @@
+"use client";
+
+import React, { useEffect, useMemo, useState } from "react";
+import Cookies from "js-cookie";
+import { ArrowLeft, Check, ChevronRight, ImagePlus, Loader2, MapPin, Pencil, Plus, Search, X } from "lucide-react";
+import toast from "react-hot-toast";
+import { API_BASE_URL } from "../utils/apiConfig";
+import LoginModal from "./LoginModal";
+import { getImageUrl } from "../utils/imageUrl";
+import { useLanguage } from "../app/context/LanguageContext";
+
+type InvestmentRole = "investor" | "business_owner";
+
+type PriceField = {
+  key: string;
+  label?: string;
+  labelBn?: string;
+  placeholder?: string;
+  placeholderBn?: string;
+  inputType?: "text" | "number";
+  required?: boolean;
+  order?: number;
+};
+
+type SubCategory = {
+  _id: string;
+  name: string;
+  subCategoryNameBn?: string;
+  order?: number;
+  status?: boolean;
+  priceBoxShow?: boolean;
+  priceBoxName?: string;
+  priceBoxFields?: PriceField[];
+};
+
+type Category = {
+  _id: string;
+  name: string;
+  categoryNameBn?: string;
+  order?: number;
+  status?: boolean;
+  subcategories: SubCategory[];
+};
+
+type SubLocation = {
+  _id: string;
+  name: string;
+  location?: string | { _id?: string };
+  order?: number;
+};
+
+type Location = {
+  _id: string;
+  name: string;
+  locationNameBn?: string;
+  order?: number;
+};
+
+interface InvestmentPostFormModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess?: (ad?: any) => void;
+  onFailure?: () => void;
+  initialMobile?: string;
+  initialRole?: InvestmentRole;
+  initialCategory?: string;
+  initialSubCategory?: string;
+  referenceDesign?: boolean;
+}
+
+function normalizeRole(value?: string): InvestmentRole {
+  return value === "investor" ? "investor" : "business_owner";
+}
+
+function categoryRole(category?: Category | null): InvestmentRole | null {
+  if (!category) return null;
+  const value = String(category.name || "").trim().toLowerCase();
+  if (/investor|investment/.test(value)) return "investor";
+  if (/business\s*owner|business-owner|business/.test(value)) return "business_owner";
+  return null;
+}
+
+function categoryMatchesRole(category: Category, role: InvestmentRole) {
+  return categoryRole(category) === role;
+}
+
+export default function InvestmentPostFormModal({
+  isOpen,
+  onClose,
+  onSuccess,
+  onFailure,
+  initialMobile = "",
+  initialRole,
+  initialCategory = "",
+  initialSubCategory = "",
+  referenceDesign = false,
+}: InvestmentPostFormModalProps) {
+  const [postRole, setPostRole] = useState<InvestmentRole>(normalizeRole(initialRole));
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [subLocations, setSubLocations] = useState<SubLocation[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [selectedSubCategory, setSelectedSubCategory] = useState<SubCategory | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState("");
+  const [selectedSubLocation, setSelectedSubLocation] = useState("");
+  const [businessStatus, setBusinessStatus] = useState<"running" | "new" | "closed">("running");
+  const [headline, setHeadline] = useState("");
+  const [description, setDescription] = useState("");
+  const [phone, setPhone] = useState(initialMobile);
+  const [images, setImages] = useState<File[]>([]);
+  const [priceValues, setPriceValues] = useState<Record<string, string>>({});
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [locationPickerSearch, setLocationPickerSearch] = useState("");
+  const [locationPickerStep, setLocationPickerStep] = useState<"district" | "area">("district");
+  const [loadingData, setLoadingData] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [userName, setUserName] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [additionalMobile, setAdditionalMobile] = useState("");
+  const [password, setPassword] = useState("");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [showExistingAccountLogin, setShowExistingAccountLogin] = useState(false);
+  const { language } = useLanguage();
+
+  const priceFields = useMemo(
+    () =>
+      [...(selectedSubCategory?.priceBoxFields || [])].sort(
+        (a, b) => (a.order || 0) - (b.order || 0),
+      ),
+    [selectedSubCategory],
+  );
+
+  const hasPriceBox = Boolean(
+    selectedSubCategory?.priceBoxShow && priceFields.length > 0,
+  );
+
+  const roleLabel = postRole === "investor" ? "Investor" : "Business Owner";
+
+  const isInvestHomeEntry =
+    typeof window !== "undefined" &&
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("source") === "invest-home" || params.has("role") || params.has("cat");
+    })();
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let cancelled = false;
+
+    const load = async () => {
+      setLoadingData(true);
+      try {
+        const token = Cookies.get("token");
+        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+        const [catRes, subRes, locRes, subLocRes, meRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/categories`).then((r) => r.json()),
+          fetch(`${API_BASE_URL}/api/categories/sub`).then((r) => r.json()),
+          fetch(`${API_BASE_URL}/api/locations`).then((r) => r.json()),
+          fetch(`${API_BASE_URL}/api/locations/sub`).then((r) => r.json()),
+          token
+            ? fetch(`${API_BASE_URL}/api/user/me`, { headers }).then((r) => r.json())
+            : Promise.resolve({ success: false }),
+        ]);
+
+        if (cancelled) return;
+
+        const rawCategories = Array.isArray(catRes.data) ? catRes.data : [];
+        const rawSubs = Array.isArray(subRes.data) ? subRes.data : [];
+
+        const nextCategories: Category[] = rawCategories
+          .map((category: any) => ({
+            ...category,
+            subcategories: rawSubs
+              .filter(
+                (sub: any) =>
+                  (sub.category?._id || sub.category) === category._id &&
+                  sub.status !== false,
+              )
+              .sort((a: any, b: any) => (a.order || 0) - (b.order || 0)),
+          }))
+          .filter((category: Category) => category.status !== false)
+          .sort((a: Category, b: Category) => (a.order || 0) - (b.order || 0));
+
+        const nextLocations: Location[] = (Array.isArray(locRes.data) ? locRes.data : [])
+          .filter((location: any) => location.status !== false)
+          .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+
+        const nextSubLocations: SubLocation[] = (Array.isArray(subLocRes.data) ? subLocRes.data : [])
+          .filter((subLocation: any) => subLocation.status !== false)
+          .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+
+        setCategories(nextCategories);
+        setLocations(nextLocations);
+        setSubLocations(nextSubLocations);
+
+        if (meRes?.success && meRes.data) {
+          setIsAuthenticated(true);
+          setUserName(meRes.data.name || "");
+          setBusinessName(meRes.data.storeName || meRes.data.businessName || meRes.data.name || "");
+          setAdditionalMobile(Array.isArray(meRes.data.additionalMobiles) ? String(meRes.data.additionalMobiles[0] || "") : "");
+          if (!initialMobile && meRes.data.mobile) setPhone(meRes.data.mobile);
+        } else {
+          setIsAuthenticated(false);
+          setUserName("");
+        }
+
+        const requestedCategory =
+          initialCategory &&
+          nextCategories.find(
+            (item) => item._id === initialCategory || item.name === initialCategory,
+          );
+
+        const hasPresetIntent = Boolean(initialRole || initialCategory || initialSubCategory);
+        const roleCategory =
+          requestedCategory ||
+          (hasPresetIntent
+            ? nextCategories.find((item) => categoryMatchesRole(item, normalizeRole(initialRole)))
+            : null);
+
+        if (roleCategory) {
+          const requestedSub =
+            initialSubCategory &&
+            roleCategory.subcategories.find(
+              (item) => item._id === initialSubCategory || item.name === initialSubCategory,
+            );
+
+          const nextSub = requestedSub || roleCategory.subcategories[0] || null;
+          setSelectedCategory(roleCategory);
+          setSelectedSubCategory(nextSub);
+          const detectedRole = categoryRole(roleCategory);
+          if (detectedRole) setPostRole(detectedRole);
+        } else {
+          setSelectedCategory(null);
+          setSelectedSubCategory(null);
+          if (hasPresetIntent) {
+            toast.error(`The ${roleLabel} category is not configured in admin yet.`);
+            return;
+          }
+        }
+
+        // Direct dashboard entry must choose a fresh location instead of silently
+        // reusing the account's previous post location.
+        if (isInvestHomeEntry && !selectedLocation && meRes?.success && meRes.data?.lastPostLocation) {
+          setSelectedLocation(meRes.data.lastPostLocation);
+        }
+        if (isInvestHomeEntry && !selectedSubLocation && meRes?.success && meRes.data?.lastPostSubLocation) {
+          setSelectedSubLocation(meRes.data.lastPostSubLocation);
+        }
+      } catch (error) {
+        console.error("Failed to load investment post data:", error);
+        toast.error("Could not load categories and locations.");
+      } finally {
+        if (!cancelled) setLoadingData(false);
+      }
+    };
+
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, initialCategory, initialSubCategory, initialMobile, initialRole]);
+
+  useEffect(() => {
+    if (!selectedSubCategory) {
+      setPriceValues({});
+      return;
+    }
+
+    const next: Record<string, string> = {};
+    for (const field of selectedSubCategory.priceBoxFields || []) {
+      next[field.key] = "";
+    }
+    setPriceValues(next);
+  }, [selectedSubCategory?._id]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setShowCategoryPicker(false);
+      setHeadline("");
+      setDescription("");
+      setImages([]);
+      setPriceValues({});
+      setSelectedSubLocation("");
+      setBusinessStatus("running");
+      setPassword("");
+      setBusinessName("");
+      setAdditionalMobile("");
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSelectSubCategory = (category: Category, subCategory: SubCategory) => {
+    setSelectedCategory(category);
+    setSelectedSubCategory(subCategory);
+    const detectedRole = categoryRole(category);
+    if (detectedRole) setPostRole(detectedRole);
+    setShowCategoryPicker(false);
+    setPriceValues({});
+  };
+
+  const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    setImages((previous) => [...previous, ...files].slice(0, 5));
+    event.target.value = "";
+  };
+
+  const removeImage = (index: number) => {
+    setImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const handleSubmit = async () => {
+    const cleanPhone = phone.replace(/\s+/g, "").trim();
+
+    if (!selectedCategory || !selectedSubCategory) {
+      toast.error(`Please configure the ${roleLabel} category in admin first.`);
+      return;
+    }
+    if (!selectedLocation) {
+      toast.error("Please select your location.");
+      return;
+    }
+    if (!selectedSubLocation) {
+      toast.error("Please select your sublocation.");
+      return;
+    }
+    if (!headline.trim()) {
+      toast.error("Please enter a headline.");
+      return;
+    }
+    if (!description.trim()) {
+      toast.error("Please enter a description.");
+      return;
+    }
+    if (!/^01\d{9}$/.test(cleanPhone)) {
+      toast.error("Please enter a valid 11-digit Bangladesh mobile number.");
+      return;
+    }
+
+    for (const field of priceFields) {
+      if (field.required && !String(priceValues[field.key] || "").trim()) {
+        toast.error(`Please fill ${field.label || field.key}.`);
+        return;
+      }
+    }
+
+    setSubmitting(true);
+
+    try {
+      let token = Cookies.get("token") || "";
+
+      if (!isAuthenticated) {
+        const checkResponse = await fetch(API_BASE_URL + "/api/user/check-mobile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mobile: cleanPhone }),
+        });
+        const checkData = await checkResponse.json().catch(() => ({}));
+
+        if (!userName.trim()) throw new Error("Please enter your name.");
+        if (!password.trim()) throw new Error("Please enter a password for your account.");
+
+        const authPayload = {
+          mobile: cleanPhone,
+          password,
+          name: userName.trim(),
+          storeName: (businessName.trim() || userName.trim()),
+          category: selectedCategory.name,
+          subCategory: selectedSubCategory.name,
+          actionType: "call",
+        };
+
+        const authResponse = await fetch(
+          API_BASE_URL + (checkData?.exists ? "/api/user/login" : "/api/user/register"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(authPayload),
+          },
+        );
+        const authData = await authResponse.json().catch(() => ({}));
+
+        if (!authResponse.ok || !authData.token) {
+          throw new Error(authData.message || "Authentication failed");
+        }
+
+        token = authData.token;
+        Cookies.set("token", token, { expires: 7, sameSite: "lax" });
+        setIsAuthenticated(true);
+        window.dispatchEvent(new Event("auth-change"));
+      }
+
+      if (token && userName.trim()) {
+        const profile = new FormData();
+        profile.append("name", userName.trim());
+        profile.append("storeName", businessName.trim() || userName.trim());
+        profile.append("additionalMobiles", JSON.stringify(additionalMobile.trim() ? [additionalMobile.replace(/\s+/g, "")] : []));
+        await fetch(API_BASE_URL + "/api/user/update", {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token },
+          body: profile,
+        });
+      }
+
+      const formData = new FormData();
+      formData.append("headline", headline.trim());
+      formData.append("description", description.trim());
+      formData.append("category", selectedCategory.name);
+      formData.append("subCategory", selectedSubCategory.name);
+      formData.append("location", selectedLocation);
+      formData.append("subLocation", selectedSubLocation);
+      formData.append("phone", cleanPhone);
+      formData.append("name", userName.trim());
+      formData.append("hidePhone", "false");
+      formData.append("phoneTypes", JSON.stringify(["call"]));
+      formData.append(
+        "additionalPhones",
+        JSON.stringify(
+          additionalMobile.trim()
+            ? [{ number: additionalMobile.replace(/\s+/g, ""), types: ["whatsapp"] }]
+            : [],
+        ),
+      );
+      formData.append("postRole", postRole);
+      if (postRole === "business_owner") formData.append("businessStatus", businessStatus);
+      formData.append(
+        "investmentReturnType",
+        postRole === "investor" ? "expected" : "return",
+      );
+      formData.append("priceBoxValues", JSON.stringify(priceValues));
+      formData.append("priceBoxFields", JSON.stringify(priceFields));
+      formData.append(
+        "features",
+        JSON.stringify({
+          priceBoxValues: priceValues,
+          priceBoxFields: priceFields,
+          priceBoxEnabled: hasPriceBox,
+          priceBoxName: hasPriceBox
+            ? selectedSubCategory.priceBoxName || "Investment Details"
+            : "",
+        }),
+      );
+
+      for (const image of images) {
+        formData.append("images", image);
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/ads`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        toast.error(data.message || "Could not submit your post.");
+        onFailure?.();
+        return;
+      }
+
+      if (data.token) {
+        Cookies.set("token", data.token, { expires: 7, sameSite: "lax" });
+      }
+
+      window.dispatchEvent(new Event("auth-change"));
+      window.dispatchEvent(new Event("refresh-ads"));
+
+      toast.success(
+        "Post submitted. It will appear publicly after admin approval.",
+      );
+
+      onSuccess?.(data.data);
+    } catch (error) {
+      console.error("Investment post submission failed:", error);
+      toast.error("Could not submit your post. Please try again.");
+      onFailure?.();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const previewImage = images[0] ? URL.createObjectURL(images[0]) : "";
+
+  if (referenceDesign) {
+    const renderPriceField = (field: PriceField) => (
+      <div key={field.key} className="min-w-0 px-2 py-2.5">
+        <input
+          type={field.inputType === "text" ? "text" : "number"}
+          value={priceValues[field.key] || ""}
+          onChange={(event) =>
+            setPriceValues((previous) => ({ ...previous, [field.key]: event.target.value }))
+          }
+          placeholder={
+            language === "bn"
+              ? field.placeholderBn || field.placeholder || field.key
+              : field.placeholder || field.key
+          }
+          className="w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+          aria-label={field.label || field.key}
+        />
+        <div className="mt-1 truncate text-[10px] font-semibold text-slate-500">
+          {language === "bn" ? (field.labelBn || field.label || field.key) : (field.label || field.key)}
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="fixed inset-0 z-[1900] flex items-center justify-center bg-black/50 p-2 sm:p-4">
+        <div className="relative flex max-h-[96vh] w-full max-w-[560px] flex-col overflow-hidden rounded-[4px] bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2.5">
+            <button type="button" onClick={onClose} className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+              <ArrowLeft className="h-4 w-4" />
+              পোস্ট করুন
+            </button>
+            <button type="button" onClick={onClose} className="rounded-full p-1 text-slate-500 hover:bg-slate-100">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {loadingData ? (
+            <div className="flex min-h-[520px] items-center justify-center text-xs text-slate-400">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              Loading...
+            </div>
+          ) : (
+            <>
+              <div className="relative overflow-y-auto px-3 pb-3 pt-2">
+                <div className="grid grid-cols-[1fr_1fr_auto] items-center gap-2 border-b border-slate-200 pb-2 text-[13px]">
+                  <button
+                    type="button"
+                    onClick={() => setShowCategoryPicker((value) => !value)}
+                    className="min-w-0 truncate rounded border border-slate-300 px-2.5 py-1.5 text-left text-[13px] font-bold text-slate-800"
+                  >
+                    {selectedCategory?.name || "Category"} · {selectedSubCategory?.name || "Subcategory"}
+                  </button>
+                  <div className="min-w-0 truncate text-center text-[12px] font-semibold text-slate-700">
+                    {selectedLocation || (language === "bn" ? "লোকেশন" : "District")}
+                    {selectedSubLocation ? ", " + selectedSubLocation : ""}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocationPickerSearch("");
+                      setLocationPickerStep(selectedLocation ? "area" : "district");
+                      setShowLocationPicker(true);
+                    }}
+                    className="shrink-0 rounded border border-slate-300 bg-white px-3 py-1 font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    {language === "bn" ? "পরিবর্তন" : "Change"}
+                  </button>
+                </div>
+
+                {showCategoryPicker ? (
+                  <div className="mt-2 grid gap-1.5 rounded border border-slate-200 bg-slate-50 p-2 sm:grid-cols-2">
+                    {categories.map((category) => (
+                      <button
+                        key={category._id}
+                        type="button"
+                        onClick={() => {
+                          const nextSub = [...category.subcategories].sort(
+                            (a, b) => (a.order || 0) - (b.order || 0),
+                          )[0] || null;
+                          setSelectedCategory(category);
+                          setSelectedSubCategory(nextSub);
+                          const detectedRole = categoryRole(category);
+                          if (detectedRole) setPostRole(detectedRole);
+                          setPriceValues({});
+                          setShowCategoryPicker(false);
+                        }}
+                        className="flex w-full items-center justify-between rounded border border-slate-200 bg-white px-3 py-3 text-left text-[13px] font-bold text-slate-800 hover:bg-slate-50"
+                      >
+                        <span>{language === "bn" ? (category.categoryNameBn || category.name) : category.name}</span>
+                        <ChevronRight className="h-4 w-4 text-slate-500" />
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {showLocationPicker ? (
+                  <div className="absolute inset-0 z-30 flex flex-col bg-white">
+                    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-slate-200 px-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (locationPickerStep === "area") {
+                            setLocationPickerStep("district");
+                            setLocationPickerSearch("");
+                          } else {
+                            setShowLocationPicker(false);
+                          }
+                        }}
+                        className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-slate-50"
+                        aria-label="Back"
+                      >
+                        <ArrowLeft className="h-4 w-4 text-slate-700" />
+                      </button>
+                      <span className="text-[14px] font-semibold text-slate-800">
+                        {locationPickerStep === "district"
+                          ? (language === "bn" ? "লোকেশন নির্বাচন করুন / Pick a Location" : "Pick a Location")
+                          : (selectedLocation || (language === "bn" ? "এলাকা নির্বাচন করুন" : "Select Area"))}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowLocationPicker(false)}
+                        className="ml-auto rounded-full p-1 text-slate-600 hover:bg-slate-50"
+                        aria-label="Close location picker"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="border-b border-slate-200 px-2 py-2">
+                      <div className="flex items-center gap-2 rounded-md border border-[#d8e2ef] px-3 py-2">
+                        <Search className="h-4 w-4 text-slate-700" />
+                        <input
+                          value={locationPickerSearch}
+                          onChange={(event) => setLocationPickerSearch(event.target.value)}
+                          placeholder={language === "bn" ? "লোকেশন খুঁজুন / Search for a location" : "Search for a location"}
+                          className="w-full text-[13px] outline-none placeholder:text-slate-400"
+                          autoFocus
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto">
+                      {locationPickerStep === "district" ? (
+                        locations
+                          .filter((location) => {
+                            const query = locationPickerSearch.trim().toLowerCase();
+                            if (!query) return true;
+                            return [location.name, location.locationNameBn || ""]
+                              .join(" ")
+                              .toLowerCase()
+                              .includes(query);
+                          })
+                          .map((location) => (
+                            <button
+                              type="button"
+                              key={location._id}
+                              onClick={() => {
+                                setSelectedLocation(location.name);
+                                setSelectedSubLocation("");
+                                setLocationPickerSearch("");
+                                setLocationPickerStep("area");
+                              }}
+                              className="flex w-full items-center gap-3 border-b border-slate-200 px-4 py-3 text-left hover:bg-slate-50"
+                            >
+                              <span className="h-2 w-2 shrink-0 rounded-full bg-[#91a5bf]" />
+                              <span className="min-w-0 flex-1 text-[15px] text-slate-800">
+                                {language === "bn" ? (location.locationNameBn || location.name) : location.name}
+                              </span>
+                              <ChevronRight className="h-4 w-4 text-slate-600" />
+                            </button>
+                          ))
+                      ) : (
+                        subLocations
+                          .filter((item) => {
+                            const parent = typeof item.location === "object" ? item.location?._id : item.location;
+                            const selected = locations.find((location) => location.name === selectedLocation);
+                            const query = locationPickerSearch.trim().toLowerCase();
+                            const matchesParent = !parent || parent === selected?._id;
+                            const matchesSearch = !query || item.name.toLowerCase().includes(query);
+                            return matchesParent && matchesSearch;
+                          })
+                          .map((item) => (
+                            <button
+                              type="button"
+                              key={item._id}
+                              onClick={() => {
+                                setSelectedSubLocation(item.name);
+                                setLocationPickerSearch("");
+                                setShowLocationPicker(false);
+                              }}
+                              className="flex w-full items-center gap-3 border-b border-slate-200 px-4 py-3 text-left hover:bg-slate-50"
+                            >
+                              <span className="h-2 w-2 shrink-0 rounded-full bg-[#91a5bf]" />
+                              <span className="min-w-0 flex-1 text-[15px] text-slate-800">{item.name}</span>
+                              <ChevronRight className="h-4 w-4 text-slate-600" />
+                            </button>
+                          ))
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-3">
+                  <div className="text-[10px] font-semibold text-slate-500">আপনার ব্যবসা সম্পর্কে কিছু দিন</div>
+                  <div className="mt-2 overflow-hidden rounded border border-slate-300 bg-slate-50">
+                    <div className="flex min-h-[82px] items-center justify-center">
+                      {previewImage ? (
+                        <img src={previewImage} alt="Post" className="h-[96px] w-[150px] object-cover" />
+                      ) : (
+                        <div className="flex flex-col items-center gap-1 text-slate-400">
+                          <ImagePlus className="h-7 w-7" />
+                          <span className="text-[9px]">আপনার ছবি যোগ করুন</span>
+                        </div>
+                      )}
+                    </div>
+                    <label className="flex cursor-pointer items-center justify-center gap-1 border-t border-slate-200 bg-white px-2 py-1.5 text-[9px] font-semibold text-slate-700">
+                      <Plus className="h-3.5 w-3.5" /> ছবি যোগ করুন
+                      <input type="file" accept="image/*" multiple className="hidden" onChange={handleImageChange} />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded border border-slate-300">
+                  {postRole === "business_owner" && selectedCategory ? (
+                    <div className="flex items-center border-b border-slate-200 bg-white px-2.5 py-1.5">
+                      <select
+                        value={businessStatus}
+                        onChange={(event) => setBusinessStatus(event.target.value as "running" | "new" | "closed")}
+                        className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-black outline-none"
+                      >
+                        <option value="running">{language === "bn" ? "সক্রিয় ব্যবসা" : "Active Business"}</option>
+                        <option value="new">{language === "bn" ? "নতুন ব্যবসা" : "New Business"}</option>
+                        <option value="closed">{language === "bn" ? "ব্যবসা বন্ধ" : "Close Business"}</option>
+                      </select>
+                    </div>
+                  ) : null}
+
+                  <input
+                    value={headline}
+                    onChange={(event) => setHeadline(event.target.value)}
+                    placeholder={language === "bn" ? "শিরোনাম / Headline" : "Headline / শিরোনাম"}
+                    className="w-full border-b border-slate-200 bg-white px-2.5 py-2.5 text-sm font-semibold outline-none placeholder:text-slate-300"
+                    required
+                  />
+                  <textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder={language === "bn" ? "বর্ণনা / Description" : "Description / বর্ণনা"}
+                    rows={5}
+                    className="w-full resize-none bg-white px-2.5 py-2.5 text-[11px] leading-5 outline-none placeholder:text-slate-300"
+                    required
+                  />
+                </div>
+
+                {hasPriceBox && (
+                  <div className="mt-3 overflow-hidden rounded border border-slate-300">
+                    <div className="grid grid-cols-3 divide-x divide-slate-200 bg-slate-50">
+                      {priceFields.slice(0, 3).map((field) => renderPriceField(field))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-3 rounded border border-slate-300 bg-white">
+                  <input
+                    value={phone}
+                    onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))}
+                    inputMode="numeric"
+                    placeholder={language === "bn" ? "মোবাইল নম্বর / Mobile number" : "Mobile number / মোবাইল নম্বর"}
+                    className="w-full border-b border-slate-200 px-3 py-3 text-[13px] font-semibold outline-none placeholder:text-slate-400 disabled:bg-slate-50 disabled:text-slate-500"
+                    disabled={isAuthenticated}
+                    required
+                  />
+
+                  {!isAuthenticated ? (
+                    <>
+                      <input
+                        value={userName}
+                        onChange={(event) => setUserName(event.target.value)}
+                        placeholder={language === "bn" ? "আপনার নাম" : "Your name"}
+                        className="w-full border-b border-slate-200 px-3 py-2.5 text-[11px] outline-none"
+                        autoComplete="name"
+                        required
+                      />
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        placeholder={language === "bn" ? "পাসওয়ার্ড" : "Password"}
+                        className="w-full border-b border-slate-200 px-3 py-2.5 text-[11px] outline-none"
+                        autoComplete="new-password"
+                        required
+                      />
+                      <input
+                        value={businessName}
+                        onChange={(event) => setBusinessName(event.target.value)}
+                        placeholder={language === "bn" ? "ব্যবসার নাম" : "Business name"}
+                        className="w-full border-b border-slate-200 px-3 py-2.5 text-[11px] outline-none"
+                        autoComplete="organization"
+                      />
+                    </>
+                  ) : null}
+
+                  <div className="flex items-center gap-2 border-t border-slate-200 px-2 py-2">
+                    <input
+                      value={additionalMobile}
+                      onChange={(event) => setAdditionalMobile(event.target.value.replace(/\D/g, "").slice(0, 11))}
+                      inputMode="numeric"
+                      placeholder={language === "bn" ? "অতিরিক্ত নম্বর / WhatsApp" : "Additional number / WhatsApp"}
+                      className="min-w-0 flex-1 text-[12px] outline-none placeholder:text-slate-400"
+                    />
+                    <span className="rounded border border-slate-200 px-2 py-1 text-[10px] text-slate-500">WhatsApp</span>
+                    <button
+                      type="button"
+                      onClick={() => setAdditionalMobile("")}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-300 text-slate-500"
+                      aria-label="Clear additional number"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {isInvestHomeEntry && !isAuthenticated ? (
+                <div className="border-t border-slate-100 px-3 py-2 text-[9px] text-slate-500">
+                  <button type="button" onClick={() => setShowExistingAccountLogin(true)} className="font-bold text-emerald-700 hover:underline">
+                    Already have an account — Login?
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="border-t border-slate-200 bg-white px-3 py-2.5">
+                <label className="flex items-start gap-1.5 text-[8px] leading-3 text-slate-500">
+                  <input type="checkbox" defaultChecked className="mt-[1px] h-3 w-3" />
+                  <span>আমি নিশ্চিত করছি যে আমার দেওয়া তথ্য সঠিক এবং Shadamon-এর নীতিমালা মেনে পোস্ট করছি।</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={submitting || loadingData}
+                  className="mt-2 w-full rounded bg-[#111111] px-4 py-2.5 text-[11px] font-bold text-white disabled:opacity-50"
+                >
+                  {submitting ? "Posting..." : "পোস্ট করুন"}
+                </button>
+              </div>
+            </>
+          )}
+
+          <LoginModal
+            isOpen={showExistingAccountLogin}
+            onClose={() => {
+              setShowExistingAccountLogin(false);
+            }}
+            initialMobile={phone}
+            onSwitchToRegister={() => setShowExistingAccountLogin(false)}
+            onSuccess={async () => {
+              setShowExistingAccountLogin(false);
+              const token = Cookies.get("token") || "";
+              if (!token) return;
+              try {
+                const response = await fetch(API_BASE_URL + "/api/user/me", { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+                const rawMe = await response.json().catch(() => ({}));
+                const me = rawMe?.user || rawMe?.data?.user || rawMe?.data || rawMe;
+                if (response.ok && me?._id) {
+                  setIsAuthenticated(true);
+                  setUserName(me.name || me.storeName || userName);
+                  setBusinessName(me.storeName || me.businessName || me.name || businessName);
+                  setAdditionalMobile(Array.isArray(me.additionalMobiles) ? String(me.additionalMobiles[0] || "") : additionalMobile);
+                  setPhone(me.mobile || phone);
+                  setShowExistingAccountLogin(false);
+                  // Keep the post modal mounted until the dashboard confirms the new
+                  // authenticated user. The parent then closes it without triggering
+                  // the unauthenticated homepage redirect.
+                  window.dispatchEvent(new Event("dashboard-login-success"));
+                }
+              } finally {
+                window.dispatchEvent(new Event("auth-change"));
+              }
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm">
+      <div className="relative flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-2 text-sm font-semibold text-slate-700 hover:text-black"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Post
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-2 text-slate-500 hover:bg-slate-100 hover:text-black"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {loadingData ? (
+            <div className="flex min-h-[420px] items-center justify-center">
+              <Loader2 className="h-7 w-7 animate-spin text-slate-500" />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                    Post as
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-base font-bold text-slate-900">
+                    <span>{roleLabel}</span>
+                    {postRole === "business_owner" ? (
+                      <select
+                        value={businessStatus}
+                        onChange={(event) => setBusinessStatus(event.target.value as "running" | "new" | "closed")}
+                        className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-black outline-none"
+                      >
+                        <option value="running">Active Business</option>
+                        <option value="new">New Business</option>
+                        <option value="closed">Close Business</option>
+                      </select>
+                    ) : (
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+                        Looking to Invest
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2">
+                    <input
+                      value={userName}
+                      onChange={(event) => setUserName(event.target.value)}
+                      placeholder="Your name"
+                      className="w-full max-w-xs rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-slate-400"
+                      required
+                    />
+                  </div>
+                  {!isAuthenticated ? (
+                    <div className="mt-2">
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        placeholder="Password (used to log in again)"
+                        className="w-full max-w-xs rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 outline-none focus:border-slate-400"
+                        required
+                      />
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-600">
+                    <MapPin className="h-4 w-4 text-slate-500" />
+                    <select
+                      value={selectedLocation}
+                      onChange={(event) => {
+                        setSelectedLocation(event.target.value);
+                        setSelectedSubLocation("");
+                      }}
+                      className="max-w-[150px] bg-transparent font-semibold outline-none"
+                      required
+                    >
+                      <option value="">Select location *</option>
+                      {locations.map((location) => (
+                        <option key={location._id} value={location.name}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <select
+                    value={selectedSubLocation}
+                    onChange={(event) => setSelectedSubLocation(event.target.value)}
+                    className="max-w-[150px] rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 outline-none"
+                    required
+                    disabled={!selectedLocation}
+                  >
+                    <option value="">Select sublocation *</option>
+                    {subLocations
+                      .filter((item) => {
+                        const parent = typeof item.location === "object" ? item.location?._id : item.location;
+                        const selected = locations.find((location) => location.name === selectedLocation);
+                        return !parent || parent === selected?._id;
+                      })
+                      .map((item) => (
+                        <option key={item._id} value={item.name}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                      Category
+                    </div>
+                    <div className="truncate text-sm font-bold text-slate-900">
+                      {selectedCategory?.name || "Not configured"}
+                      {selectedSubCategory ? (
+                        <span className="font-normal text-slate-500">
+                          {" / "}
+                          {selectedSubCategory.name}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCategoryPicker((value) => !value)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    Change
+                  </button>
+                </div>
+
+                {showCategoryPicker && (
+                  <div className="grid gap-2 border-b border-slate-100 bg-slate-50 p-3 sm:grid-cols-2">
+                    {categories.map((category) => (
+                      <div
+                        key={category._id}
+                        className="rounded-lg border border-slate-200 bg-white p-2.5"
+                      >
+                        <div className="mb-2 text-xs font-bold text-slate-800">
+                          {category.name}
+                        </div>
+                        <div className="space-y-1">
+                          {category.subcategories.length === 0 ? (
+                            <div className="text-[11px] text-slate-400">
+                              No subcategory configured
+                            </div>
+                          ) : (
+                            category.subcategories.map((sub) => {
+                              const active =
+                                selectedSubCategory?._id === sub._id;
+                              return (
+                                <button
+                                  key={sub._id}
+                                  type="button"
+                                  onClick={() =>
+                                    handleSelectSubCategory(category, sub)
+                                  }
+                                  className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-[11px] font-semibold transition ${active ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-700"}`}
+                                >
+                                  <span>{sub.name}</span>
+                                  {active ? <Check className="h-3.5 w-3.5" /> : null}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[1.05fr_1.4fr]">
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                  <div className="relative aspect-[4/3] bg-slate-100">
+                    {previewImage ? (
+                      <img
+                        src={previewImage}
+                        alt="Post preview"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-400">
+                        <ImagePlus className="h-8 w-8" />
+                        <span className="text-xs font-semibold">Add photos</span>
+                      </div>
+                    )}
+                    <label className="absolute bottom-2 right-2 inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-xs font-bold text-slate-800 shadow-md">
+                      <Plus className="h-3.5 w-3.5" />
+                      Add photos
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={handleImageChange}
+                      />
+                    </label>
+                  </div>
+
+                  {images.length > 0 && (
+                    <div className="flex gap-2 overflow-x-auto p-2">
+                      {images.map((image, index) => {
+                        const src = URL.createObjectURL(image);
+                        return (
+                          <div key={`${image.name}-${index}`} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border">
+                            <img src={src} alt="" className="h-full w-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => removeImage(index)}
+                              className="absolute right-0.5 top-0.5 rounded-full bg-black/70 p-0.5 text-white"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <input
+                    value={headline}
+                    onChange={(event) => setHeadline(event.target.value)}
+                    placeholder={
+                      postRole === "investor"
+                        ? "Want to invest BDT 50 Lacs"
+                        : "Want investment for my business"
+                    }
+                    className="w-full rounded-xl border border-slate-200 px-4 py-3 text-lg font-semibold outline-none placeholder:text-slate-300 focus:border-slate-400"
+                  />
+                  <textarea
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder="Write a clear description about your opportunity..."
+                    rows={7}
+                    className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none placeholder:text-slate-300 focus:border-slate-400"
+                  />
+                </div>
+              </div>
+
+              {hasPriceBox && (
+                <section className="rounded-xl border border-violet-100 bg-violet-50/50 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-extrabold text-slate-900">
+                        {selectedSubCategory?.priceBoxName || "Investment Details"}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        These fields come directly from the admin subcategory settings.
+                      </div>
+                    </div>
+                    <div className="text-[10px] font-semibold text-violet-600">
+                      {priceFields.length} fields
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {priceFields.map((field) => (
+                      <label key={field.key} className="rounded-lg border border-violet-100 bg-white p-2">
+                        <span className="block truncate text-[10px] font-semibold text-slate-500">
+                          {field.label || field.key}
+                          {field.required ? <span className="text-red-500"> *</span> : null}
+                        </span>
+                        <input
+                          type={field.inputType === "text" ? "text" : "number"}
+                          value={priceValues[field.key] || ""}
+                          onChange={(event) =>
+                            setPriceValues((previous) => ({
+                              ...previous,
+                              [field.key]: event.target.value,
+                            }))
+                          }
+                          placeholder={field.placeholder || field.label || field.key}
+                          className="mt-1 w-full border-0 p-0 text-sm font-bold outline-none placeholder:font-normal placeholder:text-slate-300"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {!hasPriceBox && selectedSubCategory && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+                  No investment price box is configured for <strong>{selectedSubCategory.name}</strong>. No price fields are shown.
+                </div>
+              )}
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="mb-2 text-xs font-bold text-slate-800">Contact number</div>
+                <input
+                  value={phone}
+                  onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))}
+                  inputMode="numeric"
+                  placeholder="01XXXXXXXXX"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-semibold outline-none focus:border-slate-400"
+                />
+                <p className="mt-1.5 text-[10px] text-slate-400">
+                  This number is used to create or attach your account automatically. No separate signup or OTP is required.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {isInvestHomeEntry && !isAuthenticated ? (
+          <div className="border-t border-slate-100 bg-white px-4 py-3 sm:px-6">
+            <button
+              type="button"
+              onClick={() => setShowExistingAccountLogin(true)}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 hover:underline"
+            >
+              Already have an account — Login?
+            </button>
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3 sm:px-6">
+          <div className="text-[11px] text-slate-500">
+            Your post will go to admin review first.
+          </div>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || loadingData}
+            className="inline-flex min-w-[150px] items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {submitting ? "Posting..." : "Post"}
+          </button>
+        </div>
+      <LoginModal
+        isOpen={showExistingAccountLogin}
+        onClose={() => setShowExistingAccountLogin(false)}
+        initialMobile={phone}
+        onSwitchToRegister={() => setShowExistingAccountLogin(false)}
+        onSuccess={async () => {
+          setShowExistingAccountLogin(false);
+          const token = Cookies.get("token") || "";
+          if (!token) return;
+          try {
+            const response = await fetch(API_BASE_URL + "/api/user/me", {
+              headers: { Authorization: "Bearer " + token },
+              cache: "no-store",
+            });
+            const me = await response.json().catch(() => ({}));
+            if (response.ok && me?._id) {
+              setIsAuthenticated(true);
+              setUserName(me.name || me.storeName || userName);
+              setPhone(me.mobile || phone);
+              // The user is now authenticated; close the public post form so
+              // the full dashboard becomes available immediately.
+              onClose();
+            }
+          } finally {
+            window.dispatchEvent(new Event("auth-change"));
+          }
+        }}
+      />
+      </div>
+    </div>
+  );
+}
